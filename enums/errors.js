@@ -1,0 +1,5 @@
+export const ERROR_TYPES = {
+    SYSTEM: "SYSTEM",
+    VALIDATION: "VALIDATION",
+    NOT_FOUND: "NOT_FOUND",
+}

@@ -1,90 +1,83 @@
 import express from "express";
-import { join, dirname } from 'path'
 import { Low, JSONFile } from 'lowdb'
-import { fileURLToPath } from 'url'
-
-import { customAlphabet } from "nanoid";
-const nanoid = customAlphabet('1234567890abcdef', 10)
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const file = join(__dirname, 'db.json')
-const adapter = new JSONFile(file)
+import Joi from 'joi'
+import { create } from "./use-cases/create.js";
+import { ERROR_TYPES } from "./enums/errors.js";
+import { deleteOne } from "./use-cases/delete-one.js";
+import { findOne } from "./use-cases/find-one.js";
+import { updateOne } from "./use-cases/update-one.js";
+import { find } from "./use-cases/find.js";
+const adapter = new JSONFile("db.json")
 const db = new Low(adapter)
 await db.read()
-db.data ||= { users: [], customers: [], products: [], tasks: [] }
+db.data ||= { customers: [], tasks: [] }
+const server = express()
+server.use(express.json())
 
-const server = express();
-server.use(express.json());
-const PORT = 4000;
-
-server.listen(PORT, () => console.info("Running on http://localhost:" + PORT))
-
-server.get("/:collection/:id", (req, res) => {
-    const { collection, id } = req.params
-    const data = db.data[collection]
-
-    if (!data) {
-        return res.json({ message: collection + " not a validate collection" })
-    }
-
-    const items = data.filter(d => d.id === id)
-    if (items.length) {
-        return res.json(items[0])
-    }
-
-    return res.status(404).json({ message: "Not Found" })
-
-});
-
-
-server.get("/:collection", (req, res) => {
+const handleAsync = (fn) => async (req, res, next) => {
     try {
-        const { collection } = req.params
-        const data = db.data[collection]
-        return res.status(data ? 200 : 400).json(data || { message: collection + " not a validate collection" })
-    } catch (e) {
-        res.status(500).json({ message: e.message })
+        await fn(req, res)
+    } catch ({ name, message }) {
+        console.log(message)
+        switch (name) {
+            case ERROR_TYPES.VALIDATION:
+                res.status(400).json({ message })
+                break;
+            case ERROR_TYPES.SYSTEM:
+                res.status(500).json({ message })
+                break;
+            case ERROR_TYPES.NOT_FOUND:
+                res.status(404).json({ message })
+                break;
+            default:
+                res.status(500).json({ message })
+        }
     }
-});
+}
 
-server.post("/:collection", async (req, res) => {
-    try {
+const validate = (schema, part) => {
+    const { error } = Joi.object(schema).validate(part)
+    if (error) {
+        let err = new Error()
+        err.name = ERROR_TYPES.VALIDATION
+        err.message = error.message
+        throw err
+    }
+}
+
+server
+    .get("/:collection", handleAsync(async (req, res) => {
+        validate({ collection: Joi.string().valid("customers", "tasks") }, req.params);
         const { collection } = req.params
-        const data = db.data[collection];
-        data.push({ ...req.body, id: nanoid(5) })
-        await db.write()
+        const items = await find(db, collection, d => true)
+        return res.json(items)
+    }))
+    .post("/:collection", handleAsync(async (req, res) => {
+        validate({ collection: Joi.string().valid("customers", "tasks") }, req.params);
+        validate({ customerName: Joi.string().required(), emailAddress: Joi.string().required(), type: Joi.string().required(), isActive: Joi.boolean().required() }, req.body);
+        const { collection } = req.params
+        await create(db, collection, req.body);
         res.json({ message: "Created" })
-
-    } catch (e) {
-        res.status(500).json({ message: e.message })
-    }
-});
-
-
-
-server.delete("/:collection/:id", async (req, res) => {
-    try {
+    }))
+    .get("/:collection/:id", handleAsync(async (req, res) => {
+        validate({ collection: Joi.string().valid("customers", "tasks").required(), id: Joi.string().required() }, req.params);
         const { collection, id } = req.params
-        const data = db.data[collection]
-        const index = data.map(d => d.id).indexOf(id)
-        data.splice(index, 1)
-        await db.write();
+        const item = await findOne(db, collection, (d => d.id === id))
+        return res.json(item)
+    }))
+    .delete("/:collection/:id", handleAsync(async (req, res) => {
+        validate({ collection: Joi.string().valid("customers", "tasks").required(), id: Joi.string().required() }, req.params);
+        const { collection, id } = req.params
+        await deleteOne(db, collection, id)
         res.json({ message: "Deleted" })
-    } catch (e) {
-        res.status(500).json({ message: e.message })
-    }
-});
-
-server.put("/:collection/:id", async (req, res) => {
-    try {
+    }))
+    .put("/:collection/:id", handleAsync(async (req, res) => {
+        validate({ collection: Joi.string().valid("customers", "tasks").required(), id: Joi.string().required() }, req.params);
+        validate({ customerName: Joi.string(), emailAddress: Joi.string(), type: Joi.string(), isActive: Joi.boolean() }, req.body);
         const { collection, id } = req.params
         const dataToUpdate = req.body
-        const data = db.data[collection]
-        const index = data.map(d => d.id).indexOf(id)
-        data[index] = { ...data[index], ...dataToUpdate }
-        await db.write();
-        res.json({ message: "updated" })
-    } catch (e) {
-        res.status(500).json({ message: e.message })
-    }
-});
+        await updateOne(db, collection, id, dataToUpdate)
+        res.json({ message: "Updated" })
+    }));
+
+server.listen(4000, () => console.info("Running on http://localhost:4000"))
